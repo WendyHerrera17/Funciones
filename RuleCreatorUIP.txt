@@ -1,0 +1,322 @@
+#r  "System.Data" 
+#r  "Microsoft.Azure.Documents.Client" 
+#r  "Microsoft.WindowsAzure.Storage" 
+#r  "Newtonsoft.Json"
+using Microsoft.Azure.Documents;
+using Microsoft.Azure.Documents.Client;
+using Newtonsoft.Json;
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Data.SqlClient;
+using System.Linq;
+using System.Net;
+using System.Text;
+using System.Threading.Tasks;
+using Newtonsoft.Json.Linq;
+
+public class RiskRow
+{
+    public string University { get; set; }
+    public string ApKey { get; set; }
+    public int WkOfAp { get; set; }
+    public int TotalStudents { get; set; }
+    public decimal Red { get; set; }
+    public decimal Yellow { get; set; }
+    public decimal Orange { get; set; }
+    public decimal Green { get; set; }
+
+
+    public RiskRow()
+    {
+
+    }
+    public RiskRow(string university, int totalStudents, decimal red, decimal yellow, decimal orange, decimal green)
+    {
+        University = university;
+        TotalStudents = totalStudents;
+        Red = red;
+        Yellow = yellow;
+        Orange = orange;
+        Green = green;
+    }
+}
+
+public class value
+{
+    public string leyenda { get; set; }
+    public string replace { get; set; }
+}
+
+public class Rule
+{
+    //[JsonProperty(PropertyName = "id")]
+    public string Id { get; set; }
+    public string id_template { get; set; }
+    public string schedule { get; set; }
+    public string id_group { get; set; }
+    public string file { get; set; }
+    public string container { get; set; }
+    public string subject { get; set; }
+    public string available { get; set; }
+    public value[] values { get; set; }
+    //public string mode { get; set; }
+    //public string type { get; set; }
+
+    public override string ToString()
+    {
+        return JsonConvert.SerializeObject(this);
+    }
+
+    public Rule(RiskRow riskrow)
+    {
+        Id = riskrow.University;
+        id_template = riskrow.University + "_TEMPLATE";
+        schedule = "Now";
+        id_group = riskrow.University;
+        file = "UIP Report.xls";
+        container="uipreports";
+        subject = riskrow.University + " Summary Week " + riskrow.WkOfAp;
+        available = "1";
+        values = new value[]{
+                new value {leyenda="%total%",replace=(riskrow.TotalStudents.ToString())},
+                new value {leyenda="%green%",replace=(riskrow.Green+"%")},
+                new value {leyenda="%yellow%",replace=(riskrow.Yellow+"%")},
+                new value {leyenda="%orange%",replace=(riskrow.Orange+"%")},
+                new value {leyenda="%red%",replace=(riskrow.Red+"%")}
+        };
+        //mode = "production";
+        //type = "Email Test";
+    }
+}
+
+public class Connection
+{
+    string connectionString = "Data Source=laureatembiprod.database.windows.net;Initial Catalog=LLA;User Id=ucaballero;Password=Laureate1";
+    SqlConnection connection;
+    SqlCommand cmd;
+
+    public Connection()
+    {
+        this.connection = new SqlConnection(this.connectionString);
+    }
+    public void openConnection()
+    {
+
+        if (this.connection.State == ConnectionState.Open)
+        {
+            this.connection.Close();
+            this.connection.Open();
+        }
+        else
+        {
+            this.connection.Open();
+        }
+    }
+
+    public void closeConnection()
+    {
+
+        if (this.connection.State == ConnectionState.Open)
+        {
+            this.connection.Close();
+        }
+    }
+
+    //Listo
+    public List<RiskRow> getRiskRows()
+    {
+        List<RiskRow> retval = new List<RiskRow>();
+        openConnection();
+        this.cmd = new SqlCommand("SELECT 'UIP' as University,SUM(VERDE+AMARILLO+NARANJA+ROJO) AS TotalStudents,VERDE,AMARILLO,NARANJA,isnull(ROJO,0) as 'ROJO'  FROM [uip_all].[RiskStudent] Group by VERDE,AMARILLO,NARANJA,ROJO", this.connection);
+        SqlDataReader reader = this.cmd.ExecuteReader();
+        while (reader.Read())
+        {
+           //reader.GetInt32(3);
+            retval.Add(new RiskRow(reader.GetString(0),reader.GetInt32(1),reader.GetInt32(2), reader.GetInt32(3), reader.GetInt32(4), reader.GetInt32(5)));
+            //retval.Add(new RiskRow(reader.GetString(0), reader.GetInt32(1), reader.GetDecimal(2), reader.GetDecimal(3), reader.GetDecimal(4),reader.GetDecimal(5)));   
+            //retval.Add(new RiskRow("UIP", 15, 12, 123, 43,54));   
+
+        }
+        closeConnection();
+        return retval;
+    }
+
+    //Listo
+    public int getProcessingWeek()
+    {
+        openConnection();
+        this.cmd = new SqlCommand("SELECT [value] FROM [uip_all].[settings] WHERE category = 'Semestre' AND keyInformation='WEEK'", this.connection);
+        SqlDataReader reader = this.cmd.ExecuteReader();
+        int retval = 0;
+        try
+        {
+            if (reader.Read())
+            {
+                string retvalStr = reader.GetString(0);
+                retval = int.Parse(retvalStr);
+            }
+        }
+        catch (Exception)
+        {
+            retval = 0;
+        }
+        closeConnection();
+        return retval;
+    }
+
+    //listo
+    public int getEngineExecutionValidation()
+    {
+        openConnection();
+        this.cmd = new SqlCommand("SELECT TOP 1 Value FROM [uip_all].[settings] WHERE Category = 'ValidationProcess' AND [keyInformation] = 'EngineExecutionValidation'", this.connection);
+        SqlDataReader reader = this.cmd.ExecuteReader();
+        int retval = 0;
+        try
+        {
+            if (reader.Read())
+            {
+                string retvalStr = reader.GetString(0);
+                retval = int.Parse(retvalStr);
+            }
+        }
+        catch (Exception)
+        {
+            retval = 0;
+        }
+        closeConnection();
+        return retval;
+    }
+}
+
+public class SendRule
+{
+    /*private const string EndpointUrl = "https://notifications-engine.documents.azure.com:443/";
+    private const string PrimaryKey = "NQut8q1p1MIQkyonjOtETwaTPTpFduId68he8u4eI7DcIQ44V1FkBRofQuH8Sz5ISP4hLkJJH8JxbuSwVM1WNQ==";
+    private string db = "notification_engine";
+    private string collection = "Rules";
+    private DocumentClient client;*/
+
+     public int init()
+    {
+        try{
+            runDemo().Wait();
+            return 1;
+        }catch(Exception){
+            return 0;
+        }
+        
+    }
+
+    private async Task runDemo()
+    {
+        /*this.client = new DocumentClient(new Uri(EndpointUrl), PrimaryKey);*/
+        Connection objConnection = new Connection();
+        List<RiskRow> riskrows = new List<RiskRow>();
+        riskrows = objConnection.getRiskRows();
+        int week = objConnection.getProcessingWeek();
+
+        riskrows[0].WkOfAp = week;
+
+        Rule tmpRule = new Rule(riskrows[0]);
+        //riskrows[0].WkOfAp = week;
+        /*for (int i = 0; i < riskrows.Count; i++)
+        {
+            riskrows[i].WkOfAp = week;
+            if (!objConnection.getFlagMail())
+            {
+                riskrows[i].University += "-ERROR";
+            }
+        }*/
+        
+        var baseAddress = "https://mbi-webapp-linuxprod.azurewebsites.net/rules/sendmail";
+        var http = (HttpWebRequest)WebRequest.Create(new Uri(baseAddress));
+        http.Accept = "application/json";
+        http.ContentType = "application/json";
+        http.Method = "POST";
+
+            //string parsedContent = @"{'id':'datos'}";
+        string parsedContent = "{\"id_template_param\":\""+tmpRule.id_template+"\"," +
+                                "\"id_group_param\":\""+tmpRule.id_group+"\"," +
+                                "\"id_rule_param\":20," +
+                                "\"schedule_param\":\"Now\"," +
+                                "\"subject_param\":\""+tmpRule.subject+"\"," +
+                                "\"cc_param\":null," +
+                                "\"path_file_param\":null," +
+                                "\"container_param\":\""+tmpRule.container+"\"," +
+                                "\"available_param\":\"1\"," +
+                                "\"fileName_param\":\""+tmpRule.file+"\"," +
+                                "\"values_param\":[{\"leyenda\":\"%total%\",\"replace\":\""+riskrows[0].TotalStudents+"\"},{\"leyenda\":\"%green%\",\"replace\":\""+riskrows[0].Green+"%\"},{\"leyenda\":\"%yellow%\",\"replace\":\""+riskrows[0].Yellow+"%\"},{\"leyenda\":\"%orange%\",\"replace\":\""+riskrows[0].Orange+"%\"},{\"leyenda\":\"%red%\",\"replace\":\""+riskrows[0].Red+"%\"}]}";
+            ASCIIEncoding encoding = new ASCIIEncoding();
+            Byte[] bytes = encoding.GetBytes(parsedContent);
+
+            Stream newStream = http.GetRequestStream();
+            newStream.Write(bytes, 0, bytes.Length);
+            newStream.Close();
+
+            var response2 = http.GetResponse();
+
+            var stream = response2.GetResponseStream();
+            var sr = new StreamReader(stream);
+            var content = sr.ReadToEnd();
+    }
+
+}
+
+public static async Task<HttpResponseMessage> Run(HttpRequestMessage req, TraceWriter log)
+{
+
+    /*Connection objConnection = new Connection();
+    List<RiskRow> riskrows = new List<RiskRow>();
+    riskrows = objConnection.getRiskRows();
+    int week = objConnection.getProcessingWeek();
+
+    Rule tmpRule = new Rule(riskrows[0]);
+    log.Info(tmpRule.id_group+"");*/
+
+    log.Info("C# HTTP trigger function processed a request.");
+     //log.Info("Prueba");
+    
+    int res = 1;
+    string response = "Success.";
+    Connection objConnection = new Connection();
+    if(objConnection.getEngineExecutionValidation() == 1){
+        //log.Info("Prueba");
+        SendRule rc = new SendRule();
+        res = rc.init();
+    }else{
+        response = "RuleSend wasn't executed.";
+    }
+    
+        //Connection objConnection = new Connection();
+        //List<RiskRow> riskrows = new List<RiskRow>();
+        //riskrows = objConnection.getRiskRows();
+        //int week = objConnection.getProcessingWeek();
+        //semana esta bien 
+        //log.Info(week+"");
+
+    return res==1? req.CreateResponse(HttpStatusCode.OK, new {Success = true}):req.CreateResponse(HttpStatusCode.InternalServerError, new {Success = false});
+    /*log.Info("C# HTTP trigger function processed a request.");
+        //Connection objConnection = new Connection();
+        //List<RiskRow> riskrows = new List<RiskRow>();
+        //riskrows = objConnection.getRiskRows();
+        //int week = objConnection.getProcessingWeek();
+        //semana esta bien 
+        log.Info(week+"");
+    
+    // parse query parameter
+    string name = req.GetQueryNameValuePairs()
+        .FirstOrDefault(q => string.Compare(q.Key, "name", true) == 0)
+        .Value;
+
+    if (name == null)
+    {
+        // Get request body
+        dynamic data = await req.Content.ReadAsAsync<object>();
+        name = data?.name;
+    }
+
+    return name == null
+        ? req.CreateResponse(HttpStatusCode.BadRequest, "Please pass a name on the query string or in the request body")
+        : req.CreateResponse(HttpStatusCode.OK, "Hello " + name);*/
+}

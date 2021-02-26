@@ -1,0 +1,108 @@
+#r  "System.Data" 
+#r "../bin/DocumentFormat.OpenXml.dll"
+#r "../bin/WindowsBase.dll"
+#r "../bin/Microsoft.Office.Interop.Excel.dll"
+#r "Microsoft.WindowsAzure.Storage"
+using System.Net;
+using System.Data.SqlClient;
+using System.Data;
+using System.IO;
+using Microsoft.WindowsAzure.Storage;
+using DocumentFormat.OpenXml.Packaging;
+using DocumentFormat.OpenXml.Spreadsheet;
+using DocumentFormat.OpenXml;
+using System;
+using Microsoft.WindowsAzure.Storage.Auth;
+using Microsoft.WindowsAzure.Storage.Blob;
+
+
+
+using System.Collections.Generic;
+using System.Linq;
+using System.Text;
+using System.Diagnostics;
+
+using System.Reflection;
+
+
+
+
+
+
+public static bool CreateExcelDocument(DataSet ds, string fileName)
+{
+    try
+    {
+        MemoryStream ms = new MemoryStream();
+        SpreadsheetDocument spreadsheetDocument = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook);
+        
+        using (SpreadsheetDocument document = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook))
+        {
+            //CreateExcelDocument(ds, document);
+            
+        }
+        //SpreadsheetDocument document = SpreadsheetDocument.Create(ms, SpreadsheetDocumentType.Workbook);
+        
+        //Debe crear una cuenta de almacenamiento y colocar su cadena de conexión de almacenamiento azul en el siguiente lugar
+
+        CloudStorageAccount storageAccount = CloudStorageAccount.Parse("DefaultEndpointsProtocol=https;AccountName=unabblobscladev;AccountKey=GTds45FZsSyVCUdXFlnlm62nrUxFsM0kPhxEuD8Lidefwrn5jIsptvdZQpRogQiHF1+omGfmk1nDT2cRskMTMA==;EndpointSuffix=core.windows.net");         
+        CloudBlobClient blobClient = storageAccount.CreateCloudBlobClient();
+        CloudBlobContainer container = blobClient.GetContainerReference("unab-error");
+        container.CreateIfNotExists();
+        CloudBlockBlob blockBlob = container.GetBlockBlobReference(fileName);
+        ms.Position = 0;
+        blockBlob.UploadFromStream(ms);
+        return true;
+    }
+    catch (Exception ex)
+    {
+        return false;
+    }
+}
+
+public static async Task<HttpResponseMessage> Run(HttpRequestMessage req, TraceWriter log)
+{
+    log.Info("C# HTTP trigger function processed a request.");
+    // Create 2 DataTable instances.
+    DataTable table1 = new DataTable("patients");
+	table1.Columns.Add("name");
+	table1.Columns.Add("id");
+	table1.Rows.Add("sam", 1);
+	table1.Rows.Add("mark", 2);
+
+	DataTable table2 = new DataTable("medications");
+	table2.Columns.Add("id");
+	table2.Columns.Add("medication");
+	table2.Rows.Add(1, "atenolol");
+	table2.Rows.Add(2, "amoxicillin");
+
+	// Create a DataSet and put both tables in it.
+	//DataSet set = new DataSet("office");
+	//set.Tables.Add(table1);
+	//set.Tables.Add(table2);
+    //DataSet ds=new DataSet("oficce");
+    DataSet ds= new DataSet("CustomerOrders");
+
+    
+
+    ds.Tables.Add(table1);
+    ds.Tables.Add(table2);
+
+    CreateExcelDocument(ds, "abc.xlsx");
+
+    // parse query parameter
+    string name = req.GetQueryNameValuePairs()
+        .FirstOrDefault(q => string.Compare(q.Key, "name", true) == 0)
+        .Value;
+
+    if (name == null)
+    {
+        // Get request body
+        dynamic data = await req.Content.ReadAsAsync<object>();
+        name = data?.name;
+    }
+
+    return name == null
+        ? req.CreateResponse(HttpStatusCode.BadRequest, "Please pass a name on the query string or in the request body")
+        : req.CreateResponse(HttpStatusCode.OK, "Hello " + name);
+}

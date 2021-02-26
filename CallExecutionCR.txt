@@ -1,0 +1,222 @@
+#r  "System.Data" 
+#r  "Microsoft.Azure.Documents.Client" 
+#r  "Microsoft.WindowsAzure.Storage" 
+#r  "Newtonsoft.Json"
+#r  "System.Web"
+
+using System;
+using System.Data;
+using System.Data.SqlClient;
+using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Threading;
+using System.Threading.Tasks;
+using System.IO;
+using System.Web;
+using System.Collections.Generic;
+using Newtonsoft.Json.Linq;
+
+public class Setting
+{
+    public string id { get; set; }
+    public string endPointSubmit { get; set; }
+    public string apiKey { get; set; }
+    public string baseEP { get; set; }
+
+    public string getBaseEP()
+    {
+
+        int index = endPointSubmit.IndexOf("?");
+        string retval = "";
+        if (index > 0)
+            retval = endPointSubmit.Substring(0, index);
+        return retval;
+    }
+}
+
+public static string exec(string url)
+{
+    //MessageBox.Show("init exec");
+    ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+    var request = (HttpWebRequest)WebRequest.Create(url);
+    request.ContentType = "application/json";
+    request.Timeout = 1200000;
+    var response = (HttpWebResponse)request.GetResponse();
+
+    var responseString = new StreamReader(response.GetResponseStream()).ReadToEnd();
+    //MessageBox.Show(responseString);
+    return responseString;
+}
+
+public class Connection
+{
+    string connectionString = "Data Source=laureatembiprod.database.windows.net;Initial Catalog=LUIStaging;User Id=ucaballero;Password=Laureate1";
+    SqlConnection connection;
+    SqlCommand cmd;
+
+    public Connection()
+    {
+        this.connection = new SqlConnection(this.connectionString);
+    }
+    public void openConnection()
+    {
+
+        if (this.connection.State == ConnectionState.Open)
+        {
+            this.connection.Close();
+            this.connection.Open();
+        }
+        else
+        {
+            this.connection.Open();
+        }
+    }
+
+    public void closeConnection()
+    {
+
+        if (this.connection.State == ConnectionState.Open)
+        {
+            this.connection.Close();
+        }
+    }
+
+
+    public List<Setting> getEngines()
+    {
+        List<Setting> retval = new List<Setting>();
+        openConnection();
+        this.cmd = new SqlCommand("SELECT ModelName, Endpoint, ApiKey FROM [ulatina].[RetentionEngines]", this.connection);
+
+
+        SqlDataReader reader = this.cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            Setting objSetting = new Setting();
+            objSetting.id = reader.GetString(0);
+            objSetting.endPointSubmit = reader.GetString(1);
+            objSetting.apiKey = reader.GetString(2);
+            retval.Add(objSetting);
+        }
+
+        closeConnection();
+        return retval;
+    }
+
+    public int updateEngineValidationFlag(string val)
+    {
+        try
+        {
+            int rowsAff = 0;
+            openConnection();
+            if (val != "-1")
+                this.cmd = new SqlCommand("UPDATE [ulatina].[settings] SET Value = @value WHERE Category = 'ValidationProcess' AND [Key] = 'EngineExecutionValidation' AND Value != 0", this.connection);
+            else
+                this.cmd = new SqlCommand("UPDATE [ulatina].[settings] SET Value = @value WHERE Category = 'ValidationProcess' AND [Key] = 'EngineExecutionValidation'", this.connection);
+
+            System.Data.SqlClient.SqlParameter pVal = new System.Data.SqlClient.SqlParameter("@value", SqlDbType.NVarChar);
+            pVal.Value = val;
+            this.cmd.Parameters.Add(pVal);
+
+            rowsAff = this.cmd.ExecuteNonQuery();
+            closeConnection();
+
+            return rowsAff;
+
+        }
+        catch (Exception)
+        {
+            return -1;
+        }
+    }
+
+    public int getEngineExecutionValidation()
+    {
+        openConnection();
+        this.cmd = new SqlCommand("SELECT TOP 1 Value FROM [ulatina].[settings] WHERE category = 'ValidationProcess' AND [key] = 'EngineExecutionValidation'", this.connection);
+        SqlDataReader reader = this.cmd.ExecuteReader();
+        int retval = 0;
+        try
+        {
+            if (reader.Read())
+            {
+                string retvalStr = reader.GetString(0);
+                retval = int.Parse(retvalStr);
+            }
+        }
+        catch (Exception)
+        {
+            retval = 0;
+        }
+        closeConnection();
+        return retval;
+    }
+
+
+}
+
+public static async Task<HttpResponseMessage> Run(HttpRequestMessage req, TraceWriter log)
+{
+    log.Info("C# HTTP trigger function processed a request.");
+
+    Connection objConnection = new Connection();
+    List<Setting> settingQuery = objConnection.getEngines();
+
+    int neededSuccesses = settingQuery.Count;
+    log.Info(neededSuccesses+"");
+    int successes = 0;
+    string functionUrl = "https://centam-appservice.azurewebsites.net/api/ExecuteEngineCR?code=8Dmyh0273wr0aAXoxEgWiEkp1iWWYBPQiBigsbfg5KTyh8Fqom2i9A==";
+    foreach(Setting settings in settingQuery){
+        string submitUrl = settings.getBaseEP();
+        submitUrl = HttpUtility.UrlEncode(submitUrl);
+        string key = settings.apiKey;
+        key = HttpUtility.UrlEncode(key);
+        log.Info(submitUrl);
+        int maxTries = 1;
+        int tries = 0;
+        bool success = false;
+        string url = functionUrl + "&endpoint=" + submitUrl + "&token=" + key;
+        log.Info(url);
+        while (!success && tries <= maxTries)
+        {
+            try
+            {
+                string response = exec(url);
+                if (response == "1")
+                    successes++;
+                success = true;
+            }
+            catch (Exception)
+            {
+                Thread.Sleep(15000);
+                if (objConnection.getEngineExecutionValidation() == 1)
+                {
+                    success = true;
+                    successes++;
+                }                        
+            }
+            tries++;
+        }
+    }
+    
+    string resultMess = "Failed";
+    if (successes == neededSuccesses){
+        objConnection.updateEngineValidationFlag("1");
+        resultMess = "Complete";
+        JObject result = new JObject();
+        result.Add("status", resultMess);
+        log.Info("Response: "+resultMess);
+        return req.CreateResponse(HttpStatusCode.OK, result);
+    }else{
+        objConnection.updateEngineValidationFlag("0");
+        JObject result = new JObject();
+        result.Add("status", resultMess);
+        log.Info("Response: "+resultMess);
+        return req.CreateResponse(HttpStatusCode.InternalServerError, result);
+    }
+    
+    
+    
+    
+}

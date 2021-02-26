@@ -1,0 +1,448 @@
+#r  "System.Data" 
+#r  "Microsoft.Azure.Documents.Client" 
+#r  "Microsoft.WindowsAzure.Storage" 
+#r  "Newtonsoft.Json"
+
+using System;
+using System.Net;
+using System.Collections.Generic;
+using System.Data;
+using System.Data.SqlClient;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using Newtonsoft.Json.Linq;
+
+public class RiskRow
+{
+    public string University { get; set; }
+    public string ApKey { get; set; }
+    public int WkOfAp { get; set; }
+    public int TotalStudents { get; set; }
+    public decimal Red { get; set; }
+    public decimal Yellow { get; set; }
+    public decimal Green { get; set; }
+    
+
+    public RiskRow()
+    {
+
+    }
+    public RiskRow(string university, int totalStudents, decimal red, decimal yellow, decimal green)
+    {
+        University = university;
+        TotalStudents = totalStudents;
+        Red = red;
+        Yellow = yellow;
+        Green = green;
+    }
+}
+class Connection
+{
+    string connectionString = "Data Source=laureatembiprod.database.windows.net;Initial Catalog=LUIStaging;User Id=ucaballero;Password=Laureate1";
+    SqlConnection connection;
+    SqlCommand cmd;
+
+    public Connection()
+    {
+        this.connection = new SqlConnection(this.connectionString);
+    }
+
+    public void openConnection()
+    {
+
+        if (this.connection.State == ConnectionState.Open)
+        {
+            this.connection.Close();
+            this.connection.Open();
+        }
+        else
+        {
+            this.connection.Open();
+        }
+    }
+
+    public void closeConnection()
+    {
+
+        if (this.connection.State == ConnectionState.Open)
+        {
+            this.connection.Close();
+        }
+    }
+
+    public RiskRow getRiskRow(string university)
+    {
+        RiskRow retval = new RiskRow();
+        openConnection();
+        this.cmd = new SqlCommand("SELECT University,TotalStudents,Red,Yellow,Green FROM [ulatina].[RiskStudent] WHERE University = @University", this.connection);
+
+        SqlParameter pUni = new SqlParameter("@University", SqlDbType.NVarChar);
+        pUni.Value = university;
+        this.cmd.Parameters.Add(pUni);
+
+        SqlDataReader reader = this.cmd.ExecuteReader();
+        if (reader.Read())
+        {
+            retval = new RiskRow(reader.GetString(0), reader.GetInt32(1), reader.GetDecimal(2), reader.GetDecimal(3), reader.GetDecimal(4));
+        }
+        closeConnection();
+        return retval;
+    }
+
+    public int getProcessingWeek()
+    {
+        openConnection();
+        this.cmd = new SqlCommand("SELECT TOP 1 Value FROM [ulatina].[settings] WHERE Category = 'Week' AND [Key] = 'Week'", this.connection);
+        SqlDataReader reader = this.cmd.ExecuteReader();
+        int retval = 0;
+        try
+        {
+            if (reader.Read())
+            {
+                string retvalStr = reader.GetString(0);
+                retval = int.Parse(retvalStr);
+            }
+        }
+        catch (Exception)
+        {
+            retval = 0;
+        }
+        closeConnection();
+        return retval;
+    }
+
+    public decimal getThresholds(string key)
+    {
+        openConnection();
+        this.cmd = new SqlCommand("SELECT Value FROM [ulatina].[settings] WHERE Category = 'Umbral' AND [Key] = @Key", this.connection);
+        SqlParameter pKey = new SqlParameter("@Key", SqlDbType.NVarChar);
+        pKey.Value = key;
+        this.cmd.Parameters.Add(pKey);
+
+        SqlDataReader reader = this.cmd.ExecuteReader();
+        decimal retval = 0;
+        try
+        {
+            if (reader.Read())
+            {
+                string retvalStr = reader.GetString(0);
+                retval = decimal.Parse(retvalStr);
+            }
+        }
+        catch (Exception)
+        {
+            retval = 0;
+        }
+        closeConnection();
+        return retval;
+    }
+
+    public decimal getDifferenceRegular(string university)
+    {
+        string query = "DECLARE @TotalCount INT SET @TotalCount = (SELECT COUNT(*) FROM [ulatina].[RetentionReport] WHERE StudentType = 'Regular' AND University = @University) ";
+        query += "DECLARE @RedCount INT SET @RedCount = (SELECT COUNT(*) FROM [ulatina].[RetentionReport] WHERE StudentType = 'Regular' AND GeneralRisk = 'Red' AND University = @University) ";
+        query += "DECLARE @TotalLast INT SET @TotalLast = (SELECT ISNULL(NULLIF(COUNT(*),0),-1) FROM [ulatina].[LastReport] WHERE StudentType = 'Regular'AND University = @University) ";
+        query += "DECLARE @RedLast INT SET @RedLast = (SELECT ISNULL(NULLIF(COUNT(*),0),1) FROM [ulatina].[LastReport] WHERE StudentType = 'Regular' AND GeneralRisk = 'Red' AND University = @University) ";
+        query += "SELECT CAST(@TotalCount AS DECIMAL), CAST(@RedCount AS DECIMAL), CAST(@TotalLast AS DECIMAL), CAST(@RedLast AS DECIMAL)";
+        openConnection();
+        this.cmd = new SqlCommand(query, this.connection);
+        
+        SqlParameter pUni = new SqlParameter("@University", SqlDbType.NVarChar);
+        pUni.Value = university;
+        this.cmd.Parameters.Add(pUni);
+
+        SqlDataReader reader = this.cmd.ExecuteReader();
+        decimal retval = -100;
+        try
+        {
+            if (reader.Read())
+            {
+                decimal totalCount = reader.GetDecimal(0);
+                decimal redCount = reader.GetDecimal(1);
+                decimal redTotal = reader.GetDecimal(2);
+                decimal redLast = reader.GetDecimal(3);
+
+                decimal currentPerc = redCount / totalCount;
+                decimal lastPerc = redLast / redTotal;
+                lastPerc = lastPerc == -1 ? currentPerc : lastPerc;
+                retval = Math.Abs(currentPerc - lastPerc) * 100;
+            }
+
+        }
+        catch (Exception)
+        {
+            retval = -100;
+        }
+        closeConnection();
+        return retval;
+    }
+
+    public decimal getDifferenceNew(string university)
+    {
+        string query = "DECLARE @TotalCount INT SET @TotalCount = (SELECT COUNT(*) FROM [ulatina].[RetentionReport] WHERE StudentType != 'Regular' AND University = @University) ";
+        query += "DECLARE @RedCount INT SET @RedCount = (SELECT COUNT(*) FROM [ulatina].[RetentionReport] WHERE StudentType != 'Regular' AND GeneralRisk = 'Red' AND University = @University) ";
+        query += "DECLARE @TotalLast INT SET @TotalLast = (SELECT ISNULL(NULLIF(COUNT(*),0),-1) FROM [ulatina].[LastReport] WHERE StudentType != 'Regular' AND University = @University) ";
+        query += "DECLARE @RedLast INT SET @RedLast = (SELECT ISNULL(NULLIF(COUNT(*),0),1) FROM [ulatina].[LastReport] WHERE StudentType != 'Regular' AND GeneralRisk = 'Red' AND University = @University) ";
+        query += "SELECT CAST(@TotalCount AS DECIMAL), CAST(@RedCount AS DECIMAL), CAST(@TotalLast AS DECIMAL), CAST(@RedLast AS DECIMAL)";
+        openConnection();
+        this.cmd = new SqlCommand(query, this.connection);
+
+        SqlParameter pUni = new SqlParameter("@University", SqlDbType.NVarChar);
+        pUni.Value = university;
+        this.cmd.Parameters.Add(pUni);
+
+        SqlDataReader reader = this.cmd.ExecuteReader();
+        decimal retval = -100;
+        try
+        {
+            if (reader.Read())
+            {
+                decimal totalCount = reader.GetDecimal(0);
+                decimal redCount = reader.GetDecimal(1);
+                decimal redTotal = reader.GetDecimal(2);
+                decimal redLast = reader.GetDecimal(3);
+
+                decimal currentPerc = redCount / totalCount;
+                decimal lastPerc = redLast / redTotal;
+                lastPerc = lastPerc == -1 ? currentPerc : lastPerc;
+                retval = Math.Abs(currentPerc - lastPerc) * 100;
+            }
+
+        }
+        catch (Exception)
+        {
+            retval = -100;
+        }
+        closeConnection();
+        return retval;
+    }
+
+    public string getProcessingAp()
+    {
+        openConnection();
+        this.cmd = new SqlCommand("SELECT TOP 1 Value FROM [ulatina].[settings] WHERE Category = 'Academic' AND [Key] = 'academiccycle'", this.connection);
+        SqlDataReader reader = this.cmd.ExecuteReader();
+        string retval = "";
+        try
+        {
+            if (reader.Read())
+            {
+                retval = reader.GetString(0);                    
+            }
+        }
+        catch (Exception)
+        {
+            retval = "Error";
+        }
+        closeConnection();
+        return retval;
+    }
+
+    public int deleteSummary(string ap, int week)
+    {
+        try
+        {
+            int rowsAff = 0;
+            openConnection();
+            this.cmd = new SqlCommand("DELETE FROM [ulatina].[WeeklyRiskSummary] WHERE ApKey = @ApKey AND WkOfAp = @WkOfAp", this.connection);
+
+            SqlParameter pAp = new SqlParameter("@ApKey", SqlDbType.NVarChar);
+            pAp.Value = ap;
+            this.cmd.Parameters.Add(pAp);
+
+            SqlParameter pWk = new SqlParameter("@WkOfAp", SqlDbType.Int);
+            pWk.Value = week;
+            this.cmd.Parameters.Add(pWk);
+
+            rowsAff = this.cmd.ExecuteNonQuery();
+            closeConnection();
+
+            return rowsAff;
+
+        }
+        catch(Exception ex)
+        {
+            return -1;
+        }
+    }
+
+    public int updateMailFlag(string val, string university)
+    {
+        try
+        {
+            int rowsAff = 0;
+            openConnection();
+            this.cmd = new SqlCommand("UPDATE [ulatina].[settings] SET Value = @value WHERE Category = 'FlagMail' AND [Key] = @University", this.connection);
+
+            SqlParameter pVal = new SqlParameter("@value", SqlDbType.NVarChar);
+            pVal.Value = val;
+            this.cmd.Parameters.Add(pVal);
+
+            SqlParameter pUni = new SqlParameter("@University", SqlDbType.NVarChar);
+            pUni.Value = university;
+            this.cmd.Parameters.Add(pUni);
+
+            rowsAff = this.cmd.ExecuteNonQuery();
+            closeConnection();
+
+            return rowsAff;
+
+        }
+        catch (Exception ex)
+        {
+            return -1;
+        }
+    }
+
+    public int getEngineExecutionValidation()
+    {
+        openConnection();
+        this.cmd = new SqlCommand("SELECT TOP 1 Value FROM [ulatina].[settings] WHERE Category = 'ValidationProcess' AND [Key] = 'EngineExecutionValidation'", this.connection);
+        SqlDataReader reader = this.cmd.ExecuteReader();
+        int retval = 0;
+        try
+        {
+            if (reader.Read())
+            {
+                string retvalStr = reader.GetString(0);
+                retval = int.Parse(retvalStr);
+            }
+        }
+        catch (Exception)
+        {
+            retval = 0;
+        }
+        closeConnection();
+        return retval;
+    }
+
+    public bool insertSummary(RiskRow risk)
+    {
+        int rowsAffected = 0;
+        try
+        {
+            openConnection();
+            this.cmd = new SqlCommand("INSERT INTO [ulatina].[WeeklyRiskSummary] VALUES(@University, @ApKey, @WkOfAp, @TotalStudents, @Red, @Yellow, @Green)", this.connection);
+
+            SqlParameter pUniversity = new SqlParameter("@University", SqlDbType.NVarChar);
+            pUniversity.Value = risk.University;
+            this.cmd.Parameters.Add(pUniversity);
+
+            SqlParameter pAp = new SqlParameter("@ApKey", SqlDbType.NVarChar);
+            pAp.Value = risk.ApKey;
+            this.cmd.Parameters.Add(pAp);
+
+            SqlParameter pWk = new SqlParameter("@WkOfAp", SqlDbType.Int);
+            pWk.Value = risk.WkOfAp;
+            this.cmd.Parameters.Add(pWk);
+
+            SqlParameter pTotalStudents = new SqlParameter("@TotalStudents", SqlDbType.Int);
+            pTotalStudents.Value = risk.TotalStudents;
+            this.cmd.Parameters.Add(pTotalStudents);
+
+            SqlParameter pRed = new SqlParameter("@Red", SqlDbType.Decimal);
+            pRed.Value = risk.Red;
+            this.cmd.Parameters.Add(pRed);
+
+            SqlParameter pYellow = new SqlParameter("@Yellow", SqlDbType.Decimal);
+            pYellow.Value = risk.Yellow;
+            this.cmd.Parameters.Add(pYellow);
+
+            SqlParameter pGreen = new SqlParameter("@Green", SqlDbType.Decimal);
+            pGreen.Value = risk.Green;
+            this.cmd.Parameters.Add(pGreen);
+
+            rowsAffected = this.cmd.ExecuteNonQuery();
+
+            closeConnection();
+
+        } catch(Exception ex)
+        {
+
+        }
+
+        return (rowsAffected == 1);
+    }
+
+}
+class Program
+{
+    public string exec()
+    {
+        string retval = "";
+        Connection objConnection = new Connection();           
+        RiskRow riskRow = objConnection.getRiskRow("ULATINA");
+        RiskRow riskRowUAM = objConnection.getRiskRow("UAM");
+
+        string apKey = objConnection.getProcessingAp();
+        int wkOfAp = objConnection.getProcessingWeek();
+        riskRow.ApKey = apKey;
+        riskRow.WkOfAp = wkOfAp;
+        riskRowUAM.ApKey = apKey;
+        riskRowUAM.WkOfAp = wkOfAp;
+
+        if(objConnection.deleteSummary(apKey,wkOfAp) != -1)
+        {
+            if (objConnection.insertSummary(riskRow) && objConnection.insertSummary(riskRowUAM))
+            {
+                //Console.WriteLine("Insertion was successful!");
+                decimal differenceReg = objConnection.getDifferenceRegular("ULATINA");
+                decimal differenceNew = objConnection.getDifferenceNew("ULATINA");
+                decimal thresholdReg = objConnection.getThresholds("ulatinareturn");
+                decimal thresholdNew = objConnection.getThresholds("ulatinanew");
+
+                if (differenceReg <= thresholdReg && differenceNew <= thresholdNew)
+                {
+                    objConnection.updateMailFlag("1","ULATINA");
+                }else
+                {
+                    objConnection.updateMailFlag("0","ULATINA");
+                }
+
+                decimal differenceRegUAM = objConnection.getDifferenceRegular("UAM");
+                decimal differenceNewUAM = objConnection.getDifferenceNew("UAM");
+                decimal thresholdRegUAM = objConnection.getThresholds("uamreturn");
+                decimal thresholdNewUAM = objConnection.getThresholds("uamnew");
+
+                if (differenceRegUAM <= thresholdRegUAM && differenceNewUAM <= thresholdNewUAM)
+                {
+                    objConnection.updateMailFlag("1","UAM");
+                }else
+                {
+                    objConnection.updateMailFlag("0","UAM");
+                }
+
+                retval = "Success.";
+            }
+            else
+            {
+                retval = "Failed insertion!";
+            }
+        }else
+        {
+            retval = "Failed deletion!";
+        }
+
+        return retval;  
+    }
+}
+
+public static async Task<HttpResponseMessage> Run(HttpRequestMessage req, TraceWriter log)
+{
+    log.Info("C# HTTP trigger function processed a request.");
+    string res = "WeeklySummary not executed.";
+    Connection objConnection = new Connection();
+
+    if(objConnection.getEngineExecutionValidation() == 1){
+        var execute = new Program();
+        res = execute.exec();
+    }
+    
+    JObject result = new JObject();
+    result.Add("status", "complete");
+
+    return res == null
+        ? req.CreateResponse(HttpStatusCode.InternalServerError, res)
+        : req.CreateResponse(HttpStatusCode.OK, result);
+}

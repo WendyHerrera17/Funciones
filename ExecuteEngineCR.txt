@@ -1,0 +1,371 @@
+#r  "System.Data" 
+#r  "Microsoft.Azure.Documents.Client" 
+#r  "Microsoft.WindowsAzure.Storage" 
+#r  "Newtonsoft.Json"
+#r  "System.Web"
+using System;
+using Microsoft.Azure.Documents;
+using Microsoft.Azure.Documents.Client;
+using System.Collections.Generic;
+using System.Data;
+using System.Data.SqlClient;
+using System.Diagnostics;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
+using System.Threading.Tasks;
+using System.Threading;
+using System.Web;
+
+public enum BatchScoreStatusCode
+{
+    NotStarted,
+    Running,
+    Failed,
+    Cancelled,
+    Finished
+}
+
+public class AzureBlobDataReference
+{
+
+    public string ConnectionString { get; set; }
+
+
+    public string RelativeLocation { get; set; }
+
+
+    public string BaseLocation { get; set; }
+
+
+    public string SasBlobToken { get; set; }
+}
+
+public class BatchExecutionRequest
+{
+    public IDictionary<string, AzureBlobDataReference> Inputs { get; set; }
+    public IDictionary<string, string> GlobalParameters { get; set; }
+    public IDictionary<string, AzureBlobDataReference> Outputs { get; set; }
+}
+
+public class BatchScoreStatus
+{
+
+    public BatchScoreStatusCode StatusCode { get; set; }
+
+    public IDictionary<string, AzureBlobDataReference> Results { get; set; }
+
+    public string Details { get; set; }
+}
+
+public class Connection
+{
+    string connectionString = "Data Source=laureatembiprod.database.windows.net;Initial Catalog=LUIStaging;User Id=ucaballero;Password=Laureate1";
+    SqlConnection connection;
+    SqlCommand cmd;
+
+    public Connection()
+    {
+        this.connection = new SqlConnection(this.connectionString);
+    }
+    public void openConnection()
+    {
+
+        if (this.connection.State == ConnectionState.Open)
+        {
+            this.connection.Close();
+            this.connection.Open();
+        }
+        else
+        {
+            this.connection.Open();
+        }
+    }
+
+    public void closeConnection()
+    {
+
+        if (this.connection.State == ConnectionState.Open)
+        {
+            this.connection.Close();
+        }
+    }
+
+
+    public int updateEngineValidationFlag(string val)
+    {
+        try
+        {
+            int rowsAff = 0;
+            openConnection();
+            if(val != "-1")
+                this.cmd = new SqlCommand("UPDATE [ulatina].[settings] SET Value = @value WHERE category = 'ValidationProcess' AND [key] = 'EngineExecutionValidation' AND Value != 0", this.connection);
+            else
+                this.cmd = new SqlCommand("UPDATE [ulatina].[settings] SET Value = @value WHERE category = 'ValidationProcess' AND [key] = 'EngineExecutionValidation'", this.connection);
+            
+            System.Data.SqlClient.SqlParameter pVal = new System.Data.SqlClient.SqlParameter("@value", SqlDbType.NVarChar);
+            pVal.Value = val;
+            this.cmd.Parameters.Add(pVal);
+
+            rowsAff = this.cmd.ExecuteNonQuery();
+            closeConnection();
+
+            return rowsAff;
+
+        }
+        catch (Exception ex)
+        {
+            return -1;
+        }
+    }
+
+    public int updateFailureReason(string val)
+    {
+        try
+        {
+            int rowsAff = 0;
+            openConnection();
+
+            this.cmd = new SqlCommand("UPDATE [ulatina].[settings] SET Value = @value WHERE category = 'ValidationProcess' AND [key] = 'FailureReason'", this.connection);
+           
+            System.Data.SqlClient.SqlParameter pVal = new System.Data.SqlClient.SqlParameter("@value", SqlDbType.NVarChar);
+            pVal.Value = val;
+            this.cmd.Parameters.Add(pVal);
+
+            rowsAff = this.cmd.ExecuteNonQuery();
+            closeConnection();
+
+            return rowsAff;
+
+        }
+        catch (Exception ex)
+        {
+            return -1;
+        }
+    }
+    public int getEngineExecutionValidation()
+    {
+        openConnection();
+        this.cmd = new SqlCommand("SELECT TOP 1 Value FROM [ulatina].[settings] WHERE category = 'ValidationProcess' AND [key] = 'EngineExecutionValidation'", this.connection);
+        SqlDataReader reader = this.cmd.ExecuteReader();
+        int retval = 0;
+        try
+        {
+            if (reader.Read())
+            {
+                string retvalStr = reader.GetString(0);
+                retval = int.Parse(retvalStr);
+            }
+        }
+        catch (Exception)
+        {
+            retval = 0;
+        }
+        closeConnection();
+        return retval;
+    }
+
+}
+
+public class EngineDecision
+{
+
+    public int exec(string endPoint,string apiKey)
+    {
+        int retval = 0;
+        Connection objConnection = new Connection();
+        try
+        {                       
+
+            objConnection.updateEngineValidationFlag("-1");
+
+
+            string baseUrl = endPoint;
+            string key = apiKey;
+
+            InvokeBatchExecutionService(baseUrl, key).Wait();
+                
+            retval = objConnection.getEngineExecutionValidation();
+            
+        }
+        catch (Exception e)
+        {
+            Exception baseException = e.GetBaseException();
+            objConnection.updateEngineValidationFlag("0");
+            //objConnection.updateFailureReason("exec")
+            retval = -1;
+        }
+        return retval;
+    }
+    static async Task InvokeRequestResponseService(string baseUrl, string apikey)
+    {
+        using (var client = new HttpClient())
+        {
+            var scoreRequest = new
+            {
+                GlobalParameters = new Dictionary<string, string>() {}
+            };
+            client.Timeout = Timeout.InfiniteTimeSpan;
+            string apiKey = apikey; // Replace this with the API key for the web service
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue( "Bearer", apiKey);
+
+            client.BaseAddress = new Uri(baseUrl);
+            
+            // WARNING: The 'await' statement below can result in a deadlock if you are calling this code from the UI thread of an ASP.Net application.
+            // One way to address this would be to call ConfigureAwait(false) so that the execution does not attempt to resume on the original context.
+            // For instance, replace code such as:
+            //      result = await DoSomeTask()
+            // with the following:
+            //      result = await DoSomeTask().ConfigureAwait(false)
+
+
+            HttpResponseMessage response = await client.PostAsJsonAsync("", scoreRequest);
+
+            if (response.IsSuccessStatusCode)
+            {
+                string result = await response.Content.ReadAsStringAsync();
+                Connection objConnection = new Connection();
+                objConnection.updateEngineValidationFlag("1");
+            }
+            else
+            {
+                Console.WriteLine(string.Format("The request failed with status code: {0}", response.StatusCode));
+
+                // Print the headers - they include the requert ID and the timestamp, which are useful for debugging the failure
+                Console.WriteLine(response.Headers.ToString());
+
+                string responseContent = await response.Content.ReadAsStringAsync();
+                Console.WriteLine(responseContent);
+                Connection objConnection = new Connection();
+                objConnection.updateEngineValidationFlag("0");
+            }
+        }
+    }
+    static async Task InvokeBatchExecutionService(string baseUrl, string apikey)
+    {
+
+
+        string BaseUrl = baseUrl;
+        string apiKey = apikey;
+
+        const int TimeOutInMilliseconds = 3600 * 1000; // Set a timeout of 1 hour
+
+
+        using (HttpClient client = new HttpClient())
+        {
+            var request = new BatchExecutionRequest()
+            {
+                GlobalParameters = new Dictionary<string, string>()
+                {
+                }
+            };
+
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+
+            
+            // submit the job
+            var response = await client.PostAsJsonAsync(BaseUrl + "?api-version=2.0", request);
+            if (!response.IsSuccessStatusCode)
+            {
+                await WriteFailedResponse(response);
+                return;
+            }
+
+            string jobId = await response.Content.ReadAsAsync<string>();
+
+
+            // start the job
+            response = await client.PostAsync(BaseUrl + "/" + jobId + "/start?api-version=2.0", null);
+            if (!response.IsSuccessStatusCode)
+            {
+                await WriteFailedResponse(response);
+                return;
+            }
+
+            string jobLocation = BaseUrl + "/" + jobId + "?api-version=2.0";
+            Stopwatch watch = Stopwatch.StartNew();
+            bool done = false;
+            int success = 1;
+            string reason = "None";
+            while (!done)
+            {
+                response = await client.GetAsync(jobLocation);
+                if (!response.IsSuccessStatusCode)
+                {
+                    await WriteFailedResponse(response);
+                    return;
+                }
+                
+                BatchScoreStatus status = await response.Content.ReadAsAsync<BatchScoreStatus>();
+                if (watch.ElapsedMilliseconds > TimeOutInMilliseconds)
+                {
+                    done = true;
+                    await client.DeleteAsync(jobLocation);
+                    reason = "TimeOut";
+                }
+                switch (status.StatusCode)
+                {
+                    case BatchScoreStatusCode.NotStarted:
+                        break;
+                    case BatchScoreStatusCode.Running:
+                        break;
+                    case BatchScoreStatusCode.Failed:
+                        done = true;
+                        reason = status.Details;
+                        success = 0;
+                        break;
+                    case BatchScoreStatusCode.Cancelled:
+                        done = true;
+                        reason = "Cancelled";
+                        success = 0;
+                        break;
+                    case BatchScoreStatusCode.Finished:
+                        done = true; 
+                        success = 1;                     
+                        break;
+                }
+                if (!done)
+                {
+                    Thread.Sleep(5000); // Wait one second
+                }
+            }
+            Connection objConnection = new Connection();
+            objConnection.updateEngineValidationFlag(success.ToString());
+            objConnection.updateFailureReason(reason);
+        }
+    }
+
+
+
+    static async Task WriteFailedResponse(HttpResponseMessage response)
+    {
+
+        string responseContent = await response.Content.ReadAsStringAsync();
+
+    }
+}
+
+public static async Task<HttpResponseMessage> Run(HttpRequestMessage req, TraceWriter log)
+{
+    log.Info("C# HTTP trigger function processed a request.");
+    string endPoint = req.GetQueryNameValuePairs()
+        .FirstOrDefault(q => string.Compare(q.Key, "endpoint", true) == 0)
+        .Value;
+
+    log.Info(endPoint);
+
+    string token = req.GetQueryNameValuePairs()
+        .FirstOrDefault(q => string.Compare(q.Key, "token", true) == 0)
+        .Value;
+    log.Info(token);
+
+
+    EngineDecision ed = new EngineDecision();
+    int res = ed.exec(endPoint, token);
+
+    log.Info("Response: "+res);
+    
+    return req.CreateResponse(HttpStatusCode.OK, res);
+}

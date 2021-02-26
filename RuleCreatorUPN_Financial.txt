@@ -1,0 +1,410 @@
+#r  "System.Data" 
+#r  "Microsoft.Azure.Documents.Client" 
+#r  "Microsoft.WindowsAzure.Storage" 
+#r  "Newtonsoft.Json"
+using Microsoft.Azure.Documents;
+using Microsoft.Azure.Documents.Client;
+using Newtonsoft.Json;
+using System;
+using System.IO;
+using System.Collections.Generic;
+using System.Data;
+using System.Data.SqlClient;
+using System.Linq;
+using System.Net;
+using System.Text;
+using System.Threading.Tasks;
+using Newtonsoft.Json.Linq;
+
+
+public class RiskRow
+{
+    public string University { get; set; }
+    public int Year { get; set; }
+    public int WkOfYr { get; set; }
+    public int TotalStudents { get; set; }
+    public decimal Red { get; set; }
+    public decimal Yellow { get; set; }
+    public decimal Green { get; set; }
+    public decimal Orange { get; set; }
+    public string SubjectUniversity {get;set;}
+
+    public RiskRow()
+    {
+
+    }
+    public RiskRow(string university, int totalStudents, decimal red,  decimal orange,decimal yellow,decimal green)
+    {
+        University = university;
+        SubjectUniversity = university;
+        TotalStudents = totalStudents;
+        Red = red;
+        Yellow = yellow;
+        Green = green;
+        Orange=orange;
+    }
+}
+
+
+public class Connection
+{
+    string connectionString = "Data Source=laureatembiprod.database.windows.net;Initial Catalog=LLA;User Id=Ucaballero;Password=Laureate1";
+    SqlConnection connection;
+    SqlCommand cmd;
+
+    public Connection()
+    {
+        this.connection = new SqlConnection(this.connectionString);
+    }
+    public void openConnection()
+    {
+
+        if (this.connection.State == ConnectionState.Open)
+        {
+            this.connection.Close();
+            this.connection.Open();
+        }
+        else
+        {
+            this.connection.Open();
+        }
+    }
+
+    public void closeConnection()
+    {
+
+        if (this.connection.State == ConnectionState.Open)
+        {
+            this.connection.Close();
+        }
+    }
+    public List<RiskRow> getRiskRows()
+    {
+        List<RiskRow> retval = new List<RiskRow>();
+        openConnection();
+        this.cmd = new SqlCommand("select [University], [TotalInstances], [RIESGO MUY ALTO],[RIESGO ALTO],[RIESGO MEDIANO] ,[RIESGO BAJO]  from [upn_staging].[RiskStudentAFR]", this.connection);
+        //this.cmd = new SqlCommand("SELECT  'UPN' as [University],148516 as [TotalInstances],80.1 as [Red],8.63 as [Yellow],8.66 as [Orange],11.35 as [Green]", this.connection);
+        SqlDataReader reader = this.cmd.ExecuteReader();
+        
+        try{
+            while (reader.Read())
+            {
+                retval.Add(new RiskRow(reader.GetString(0), reader.GetInt32(1), reader.GetDecimal(2), reader.GetDecimal(3),reader.GetDecimal(4), reader.GetDecimal(5)));
+            }
+        }catch(Exception){
+            retval = null;
+        }
+        
+        closeConnection();
+        return retval;
+    }
+
+    public bool getFlagMail()
+    {
+        bool retval = false;
+        openConnection();
+        this.cmd = new SqlCommand("SELECT Value FROM [upn_settings].[Operations] WHERE Category = 'FlagMail' AND [Key] = 'UPN'", this.connection);
+        SqlDataReader reader = this.cmd.ExecuteReader();
+        if (reader.Read())
+        {
+            string flag = reader.GetString(0);
+            retval = (flag == "1");
+        }
+        closeConnection();
+        return retval;
+    }
+
+    public int getProcessingWeek()
+    {
+        openConnection();
+        this.cmd = new SqlCommand("SELECT TOP 1 Value FROM [upn_settings].[Operations] WHERE Category = 'DataProcess' AND [Key] = 'Week'", this.connection);
+        SqlDataReader reader = this.cmd.ExecuteReader();
+        int retval = 0;
+        try
+        {
+            if (reader.Read())
+            {
+                string retvalStr = reader.GetString(0);
+                retval = int.Parse(retvalStr);
+            }
+        }
+        catch (Exception)
+        {
+            retval = 0;
+        }
+        closeConnection();
+        return retval;
+    }
+
+    public int getEngineExecutionValidation()
+    {
+        openConnection();
+        this.cmd = new SqlCommand("SELECT TOP 1 Value FROM [upn_settings].[Operations] WHERE Category = 'ValidationProcess' AND [Key] = 'FREngineExecutionValidation'", this.connection);
+        SqlDataReader reader = this.cmd.ExecuteReader();
+        int retval = 0;
+        try
+        {
+            if (reader.Read())
+            {
+                string retvalStr = reader.GetString(0);
+                retval = int.Parse(retvalStr);
+            }
+        }
+        catch (Exception)
+        {
+            retval = 0;
+        }
+        closeConnection();
+        return retval;
+    }
+}
+
+public class Mail{
+    public void SendMailError(){
+        var baseAddress = "https://mbi-webapp-linuxprod.azurewebsites.net/rules/sendmail";
+        var http = (HttpWebRequest)WebRequest.Create(new Uri(baseAddress));
+        http.Accept = "application/json";
+        http.ContentType = "application/json";
+        http.Method = "POST";
+        //---------------------------- Parametrizar el correo ------------------------------
+        Connection objConnection = new Connection();
+        List<RiskRow> riskrows = new List<RiskRow>();
+        riskrows = objConnection.getRiskRows();
+        bool FlagMail=objConnection.getFlagMail();
+        int Week=objConnection.getProcessingWeek();
+        int Engine=objConnection.getEngineExecutionValidation();
+
+        //string table="";
+        string R_totalStudent="";
+        string R_green="";
+        string R_Yellow="";
+        string R_Orange="";
+        string R_Red="";
+
+        if(riskrows.Count==0){
+             R_totalStudent="null";
+             R_green="null";
+             R_Yellow="null";
+             R_Orange="null";
+             R_Red="null";
+             //table =  "<p><strong>Flag Mail</strong></p><p>&nbsp;&nbsp;&nbsp;&nbsp;"+FlagMail+"&nbsp;&nbsp;&nbsp;&nbsp;</p><p><strong>Week</strong></p><p>&nbsp;&nbsp;&nbsp;&nbsp;"+Week+"&nbsp;&nbsp;&nbsp;&nbsp;</p><p><strong>Engine Execution Validation</strong></p><p>&nbsp;&nbsp;&nbsp;&nbsp;"+Engine+"&nbsp;&nbsp;&nbsp;&nbsp;</p><table style='border: 1px solid #9c9c9c; width: 504px;'><tbody><tr style='border: grey 1px solid;'><td style='width: 124px;'><p><strong>Risk Student</strong></p></td><td style='width: 128px;'>&nbsp;</td><td style='width: 74px;'>&nbsp;</td><td style='width: 81px;'>&nbsp;</td><td style='width: 95px;'>&nbsp;</td></tr><tr style='border: grey 1px solid;'><td style='border: 1px solid grey; width: 124px; text-align: center;'><strong>Universidad</strong></td><td style='border: 1px solid grey; width: 128px; text-align: center;'><strong>Total Student</strong></td><td style='border: 1px solid grey; width: 74px; text-align: center;'><strong>Red</strong></td><td style='border: 1px solid grey; width: 81px; text-align: center;'><strong>Yellow</strong></td><td style='border: 1px solid grey; width: 95px; text-align: center;'><strong>Green</strong></td></tr><tr style='border: grey 1px solid;'><td style='border: 1px solid grey; width: 124px; text-align: left;'>empty</td><td style='border: 1px solid grey; width: 128px; text-align: left;'>empty</td><td style='border: 1px solid grey; width: 74px; text-align: left;'>empty</td><td style='border: 1px solid grey; width: 81px; text-align: left;'>empty</td><td style='border: 1px solid grey; width: 95px; text-align: left;'>empty</td></tr></tbody></table>";
+        }else{
+             List<RiskRow> riskrow = new List<RiskRow>();
+             riskrow = objConnection.getRiskRows();
+             R_totalStudent=riskrow[0].TotalStudents.ToString();
+             R_green=riskrow[0].Green+"%";
+             R_Yellow=riskrow[0].Yellow+"%";
+             R_Orange=riskrow[0].Orange+"%";
+             R_Red=riskrow[0].Red+"%";
+             //table =  "<table style='border: grey 1px solid;' > <tr style='border: grey 1px solid;' > <td ><p><strong>Risk Student</strong></p></td><td></td><td></td><td></td><td></td></tr><tr style='border: grey 1px solid;' > <td style='border: grey 1px solid;' ><strong>Universidad</strong> </td><td style='border: grey 1px solid;'><strong>Total Student</strong></td><td style='border: grey 1px solid;'><strong>Red</strong></td><td style='border: grey 1px solid;'><strong>Yellow</strong></td><td style='border: grey 1px solid;'><strong>Green</strong></td></tr><tr style='border: grey 1px solid;' > <td style='border: grey 1px solid;' >"+riskrows[0].University+"</td><td style='border: grey 1px solid;'>"+riskrows[0].TotalStudents+"</td><td style='border: grey 1px solid;'>"+riskrows[0].Red+"</td><td style='border: grey 1px solid;'>"+riskrows[0].Yellow+"</td><td style='border: grey 1px solid;'>"+riskrows[0].Green+"</td></tr><td ><p><strong>Flag Mail</strong></p></td><td></td><td></td><td></td><td></td></tr><td style='border: grey 1px solid;'>"+FlagMail+"</td><td></td><td></td><td></td><td></td></tr><td ><p><strong>Week</strong></p></td><td></td><td></td><td></td><td></td></tr><td style='border: grey 1px solid;'>"+Week+"</td><td></td><td></td><td></td><td></td></tr><td ><p><strong>Engine Execution Validation</strong></p></td><td></td><td></td><td></td><td></td></tr><td style='border: grey 1px solid;'>"+Engine+"</td><td></td><td></td><td></td><td></td></tr></table>";
+        }
+        
+        
+		RuleJsonNE bsObj = new RuleJsonNE(); 
+    
+        bsObj.id_template_param ="UPN_TEMPLATE_ALERT_ERROR_FR";
+        bsObj.id_group_param ="UPN-ALERT-ERROR";
+        bsObj.id_rule_param =64;
+        bsObj.schedule_param ="Now";
+        bsObj.subject_param =" [Error] UPN Motor de Riesgo Financiero - Resumen de la Semana  "+Week;
+        bsObj.cc_param =null;
+        bsObj.path_file_param =null;
+        bsObj.container_param =null;
+        bsObj.available_param ="1";
+        bsObj.fileName_param =null;
+
+        
+       /* List<ValuesParam> values_param2 = new List<ValuesParam>
+        {
+             new ValuesParam {leyenda="%Grupo%",replace=("UPN-RETENTION-ALERT")},
+             new ValuesParam {leyenda="%table%",replace=(table)},
+        };*/
+        
+
+
+
+        List<ValuesParam> values_param2 = new List<ValuesParam>
+        {
+             new ValuesParam {leyenda="%total%",replace=(R_totalStudent)},
+             new ValuesParam {leyenda="%green%",replace=(R_green)},
+             new ValuesParam {leyenda="%yellow%",replace=(R_Yellow)},
+             new ValuesParam {leyenda="%orange%",replace=(R_Orange)},
+             new ValuesParam {leyenda="%red%",replace=(R_Red)}
+        };
+       
+        bsObj.values_param= values_param2;
+    
+		string output = JsonConvert.SerializeObject(bsObj);
+
+        //------------------- Fin Parametrizar el correo --------------    
+            ASCIIEncoding encoding = new ASCIIEncoding();
+            Byte[] bytes = encoding.GetBytes(output);
+
+            Stream newStream = http.GetRequestStream();
+            newStream.Write(bytes, 0, bytes.Length);
+            newStream.Close();
+
+            var response2 = http.GetResponse();
+
+            var stream = response2.GetResponseStream();
+            var sr = new StreamReader(stream);
+            var content = sr.ReadToEnd();
+    
+    }
+     public void SendMail(RiskRow riskrow){
+		var baseAddress = "https://mbi-webapp-linuxprod.azurewebsites.net/rules/sendmail";
+        var http = (HttpWebRequest)WebRequest.Create(new Uri(baseAddress));
+        http.Accept = "application/json";
+        http.ContentType = "application/json";
+        http.Method = "POST";
+        //---------------------------- Parametrizar el correo ------------------------------
+		RuleJsonNE bsObj = new RuleJsonNE(); 
+        Connection objConnection = new Connection();
+        int Week=objConnection.getProcessingWeek();
+    
+        bsObj.id_template_param ="UPN_TEMPLATE_ALERT_FR";
+        bsObj.id_group_param ="UPN-FINANCIAL-ALERT";
+        bsObj.id_rule_param =63;
+        bsObj.schedule_param ="Now";
+        bsObj.subject_param ="UPN Motor de Riesgo Financiero - Resumen de la Semana " + Week;
+        bsObj.cc_param =null;
+        bsObj.path_file_param =null;
+        bsObj.container_param =null;
+        bsObj.available_param ="1";
+        bsObj.fileName_param =null;
+        
+
+        List<ValuesParam> values_param2 = new List<ValuesParam>
+        {
+             new ValuesParam {leyenda="%total%",replace=(riskrow.TotalStudents.ToString())},
+             new ValuesParam {leyenda="%green%",replace=(riskrow.Green+"%")},
+             new ValuesParam {leyenda="%yellow%",replace=(riskrow.Yellow+"%")},
+             new ValuesParam {leyenda="%orange%",replace=(riskrow.Orange+"%")},
+             new ValuesParam {leyenda="%red%",replace=(riskrow.Red+"%")}
+        };
+       
+        bsObj.values_param= values_param2;
+    
+		string output = JsonConvert.SerializeObject(bsObj);
+
+        //------------------- Fin Parametrizar el correo --------------    
+            ASCIIEncoding encoding = new ASCIIEncoding();
+            Byte[] bytes = encoding.GetBytes(output);
+
+            Stream newStream = http.GetRequestStream();
+            newStream.Write(bytes, 0, bytes.Length);
+            newStream.Close();
+
+            var response2 = http.GetResponse();
+
+            var stream = response2.GetResponseStream();
+            var sr = new StreamReader(stream);
+            var content = sr.ReadToEnd();
+    }
+}
+
+// send Rule
+public class SendRule
+{
+    public int init()
+    {
+        try{
+            runDemo().Wait();
+            return 1;
+        }catch(Exception){
+            return 0;
+        }
+        
+    }
+
+    private async Task runDemo()
+    {
+        
+        Connection objConnection = new Connection();
+        List<RiskRow> riskrows = new List<RiskRow>();
+        riskrows = objConnection.getRiskRows();
+        
+
+        int week = objConnection.getProcessingWeek();
+        for (int i = 0; i < riskrows.Count; i++)
+        {
+            riskrows[i].WkOfYr = week;
+            if (!objConnection.getFlagMail())
+            {
+                Mail tmpMailError=new Mail();
+                tmpMailError.SendMailError();
+                //riskrows[i].University += "-ERROR";
+                //riskrows[i].SubjectUniversity = "[Error] "+riskrows[i].SubjectUniversity;
+            }
+        }
+
+        //Rule tmpRule = new Rule(riskrows[0]);
+        Mail tmpMail=new Mail();
+        tmpMail.SendMail(riskrows[0]);
+        
+
+    }
+
+
+}
+
+//para poder crear el arregle de los values 
+public class ValuesParam
+{
+    public string leyenda { get; set; }
+    public string replace { get; set; }
+}
+
+/*
+    Clase para poder parametrizar el JSON que se enviara 
+*/
+public class RuleJsonNE
+{
+    public string id_template_param { get; set; }
+    public string id_group_param { get; set; }
+    public int id_rule_param { get; set; }
+    public string schedule_param { get; set; }
+    public string subject_param { get; set; }
+    public object cc_param { get; set; }
+    public object path_file_param { get; set; }
+    public object container_param { get; set; }
+    public string available_param { get; set; }
+    public object fileName_param { get; set; }
+    public List<ValuesParam> values_param { get; set; }
+}
+
+public static async Task<HttpResponseMessage> Run(HttpRequestMessage req, TraceWriter log)
+{
+     log.Info("C# HTTP trigger function processed a request.");
+
+    int res = 1;
+    string response = "Success.";
+    Connection objConnection = new Connection();
+    if(objConnection.getEngineExecutionValidation() == 1){
+        SendRule rc = new SendRule();
+        res = rc.init();
+    }else{
+        response = "RuleSend wasn't executed.";
+        Mail tmpMailError=new Mail();
+        tmpMailError.SendMailError();
+    }
+    
+    //List<RiskRow> riskrows = new List<RiskRow>();
+    //riskrows = objConnection.getRiskRows();
+
+
+    //log.Info(riskrows.Count+"");
+    //int week = objConnection.getProcessingWeek();*/
+    //for (int i = 0; i < riskrows.Count; i++)
+    //{
+      //  log.Info(riskrows[i]+"Aqui");
+        //if(!objConnection.getFlagMail(riskrows[i].campus)){
+          //  riskrows[i].campus += "-ERROR";
+        //}
+    //}
+
+    
+
+return res==1? req.CreateResponse(HttpStatusCode.OK, new {Success = true}):req.CreateResponse(HttpStatusCode.InternalServerError, new {Success = false});
+
+}
